@@ -59,7 +59,9 @@ klog() {
   if [ "$1" = 0 ] && [ -n "${B70D_JOURNAL+x}" ]; then cat "$B70D_JOURNAL" 2>/dev/null; return; fi
   if [ "$1" = -1 ] && [ -n "${B70D_JOURNAL_PREV+x}" ]; then cat "$B70D_JOURNAL_PREV" 2>/dev/null; return; fi
   if [ -n "${B70D_JOURNAL+x}" ]; then return; fi
-  if have journalctl && journalctl -k -b "$1" --no-pager -q 2>/dev/null; then return; fi
+  local out=""
+  have journalctl && out=$(journalctl -k -b "$1" --no-pager -q 2>/dev/null)
+  if [ -n "$out" ]; then printf '%s\n' "$out"; return; fi
   [ "$1" = 0 ] && dmesg 2>/dev/null
 }
 # "name version" lines for installed packages we care about.
@@ -183,7 +185,7 @@ printf '%sb70-doctor %s%s: read-only check. It changes nothing; every "fix:" lin
 section "System"
 info "$OS_NAME, kernel $KREL, RAM $(( ${MEM_KB:-0} / 1048576 )) GiB"
 [ "$KLOG_OK" = 0 ] && warn "can't read the kernel log, so firmware and GPU-hang checks are skipped" && \
-  fix "sudo bash b70-doctor.sh   (sudo only lets it read the log; it still changes nothing)"
+  fix "sudo bash b70-doctor.sh  or  curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh | sudo bash   (sudo only lets it read the log; it still changes nothing)"
 
 # --- GPUs ----------------------------------------------------------------------
 if [ "${#GPUS[@]}" = 0 ]; then
@@ -399,7 +401,7 @@ if have docker; then
   section "Docker"
   rg=$(stat -c %g "$R/dev/dri/renderD128" 2>/dev/null)
   info "run GPU containers with: --device /dev/dri --group-add ${rg:-<render gid>}"
-  why "vLLM XPU: also pass -e ZE_AFFINITY_MASK=0 (pick the card); without it, host-offloaded weights hit UR OUT_OF_DEVICE_MEMORY here."
+  why "vLLM XPU: also pass -e ZE_AFFINITY_MASK=0 (pick the card); on a B70 with vLLM UVA offload, leaving it out gave UR OUT_OF_DEVICE_MEMORY."
 fi
 
 # --- probe -------------------------------------------------------------------------------
