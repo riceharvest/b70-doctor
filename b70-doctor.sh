@@ -11,7 +11,7 @@
 # https://github.com/riceharvest/b70-doctor  (MIT)
 # Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK.
 
-VERSION=0.2.0
+VERSION=0.3.0
 set -u
 
 R="${B70D_ROOT:-}"
@@ -35,6 +35,7 @@ done
 GOOD_KERNEL="7.0 (Ubuntu 26.04), 7.1.8 (Fedora 43)"
 GOOD_GUC="70.65.0"
 GOOD_CR="26.18 (Fedora 43), 26.27 (vLLM 0.31 XPU image)"
+HUB="https://riceharvest.github.io/awesome-b70/"
 
 NFAIL=0; NWARN=0
 if [ "$COLOR" = 1 ]; then
@@ -341,7 +342,9 @@ for g in "${GPUS[@]}"; do
       if [ "$rs_ccs" -gt 0 ]; then
         warn "$when: $rs_ccs compute-engine resets ($n_to job timeouts on any engine)"
         why "last: $(printf '%s\n' "$L" | grep -E "engine_class=ccs" | tail -n1 | sed -E 's/.*\[drm\] //' | cut -c1-130)"
-        why "Known B70 reports: llama.cpp#25692 (SYCL FA + quantized KV under load), compute-runtime#944."
+        why "Known B70 issue family (compute-runtime#944, llama.cpp#25692, #27595). It tracks the driver release, not your app."
+        fix "llama.cpp SYCL / oneAPI apps: try SYCL_UR_USE_LEVEL_ZERO_V2=0 (stopped the resets for one 26.27 user, llama.cpp#27595)"
+        why "More reported mitigations: ${HUB}#gpu-hangs-and-resets"
         [ -n "$jmax" ] && [ -n "$jt" ] && [ "$jt" -lt "$jmax" ] 2>/dev/null && \
           fix "for long single kernels you can try: echo $jmax | sudo tee $e/job_timeout_ms   (resets at reboot; may not help real hangs)"
       fi
@@ -367,6 +370,13 @@ if [ $(( ${#GPUS[@]} + OTHER_GPUS )) -gt 1 ]; then
   info "${#GPUS[@]} Intel + $OTHER_GPUS other GPU(s). Pick the card explicitly:"
   why "llama.cpp SYCL: ONEAPI_DEVICE_SELECTOR=level_zero:N   llama.cpp Vulkan: GGML_VK_VISIBLE_DEVICES=N"
   why "vLLM / PyTorch XPU: ZE_AFFINITY_MASK=N   (list devices with: sycl-ls, vulkaninfo --summary)"
+  if [ "$NBMG" -ge 2 ]; then
+    info "$NBMG Battlemage cards: known dual-card issues and what helped"
+    why "llama.cpp SYCL --split-mode tensor crashes or hangs: GGML_SYCL_DEV2DEV_MEMCPY=2 (slower, stable; llama.cpp#27198),"
+    why "  GGML_SYCL_ENABLE_VMM=0 for the quantized-KV hang (#26409), or use --split-mode layer"
+    why "vLLM TP2 on boards without GPU P2P: CCL_SYCL_ALLREDUCE_SIMPLE_THRESHOLD, CCL_SYCL_REDUCE_SCATTER_SIMPLE_THRESHOLD and"
+    why "  CCL_SYCL_ALLGATHERV_SIMPLE_THRESHOLD=4294967296 (SergiioB's cookbook, docs/DUAL-B70-TP2.md)"
+  fi
 fi
 
 # --- userspace ---------------------------------------------------------------------
@@ -399,6 +409,10 @@ if [ -e "$R/usr/share/vulkan/icd.d/intel_icd.x86_64.json" ] || [ -e "$R/usr/shar
   ok "Vulkan: Mesa ANV installed${mv:+ ($mv)}"
   why "llama.cpp Vulkan on Xe2: flash attention falls back to a slow scalar path (llama.cpp#30503, #27638)."
   why "At long context SYCL is usually faster (llama.cpp#28721)."
+  mver=$(printf '%s' "${mv#* }" | sed -E 's/^[0-9]+://; s/[^0-9.].*$//')
+  if [ -n "$mver" ] && [ "$(printf '%s\n26.1.7\n' "$mver" | sort -V | head -n1)" != "26.1.7" ]; then
+    info "Mesa $mver: updating to 26.1.7 or newer doubled Vulkan decode on a B580 (llama.cpp discussion #27777)"
+  fi
 else
   info "no Intel Vulkan driver (Mesa ANV) found; only matters for Vulkan builds (llama.cpp Vulkan, LM Studio Vulkan)"
   fix "$(install_cmd vulkan)"
@@ -444,6 +458,7 @@ fi
 # --- summary ---------------------------------------------------------------------------------
 printf '\n%sSummary:%s %d problem(s), %d warning(s).' "$C_B" "$C_0" "$NFAIL" "$NWARN"
 [ "$NBMG" = 0 ] && [ "${#GPUS[@]}" -gt 0 ] && printf ' No Battlemage GPU found.'
+printf '\nKnown problems and workarounds: %s#known-problems-and-workarounds' "$HUB"
 printf '\nFor a bug report, run it again with --report (piped: ... | bash -s -- --report)\n'
 [ "$NFAIL" -gt 0 ] && exit 1
 exit 0

@@ -11,7 +11,7 @@ PASS=0; FAILN=0
 #   os=fedora|ubuntu  swap=0|1
 mkfix() {
   local F=$1; shift
-  local drv=xe bar=34359738368 width=16 speed="16.0 GT/s PCIe" vfs=0 render=rw id=0xe223 os=fedora swap=0
+  local drv=xe bar=34359738368 width=16 speed="16.0 GT/s PCIe" vfs=0 render=rw id=0xe223 os=fedora swap=0 dual=0
   local kv; for kv in "$@"; do eval "local ${kv%%=*}=\"\${kv#*=}\""; done
   local P="$F/sys/devices/pci0000:00/0000:00:03.1"
   local US="$P/0000:07:00.0" DS="$P/0000:07:00.0/0000:08:01.0"
@@ -43,6 +43,12 @@ mkfix() {
     ubuntu) printf 'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 26.04 LTS"\n' > "$F/etc/os-release" ;;
   esac
   : > "$F/usr/share/vulkan/icd.d/intel_icd.x86_64.json"
+  if [ "$dual" = 1 ]; then
+    local D2="$F/sys/devices/pci0000:00/0000:00:01.1/0000:0b:00.0"
+    mkdir -p "$D2/drm/renderD129"; echo 0x8086 > "$D2/vendor"; echo 0xe223 > "$D2/device"; echo 0x030000 > "$D2/class"
+    cp "$D/resource" "$D2/resource"; ln -s "$D2" "$F/sys/bus/pci/devices/0000:0b:00.0"; ln -s "$F/sys/bus/pci/drivers/xe" "$D2/driver"
+    : > "$F/dev/dri/renderD129"
+  fi
 }
 
 GOODLOG='Oct 14 kernel: xe 0000:09:00.0: [drm] Finished loading DMC firmware i915/bmg_dmc.bin (v2.6)
@@ -81,6 +87,9 @@ expect healthy 'Resizable BAR on \(BAR 32 GiB\)'
 expect healthy 'you can open /dev/dri/renderD128'
 expect healthy 'compute-runtime: intel-compute-runtime 26.18'
 expect healthy 'Summary: 0 problem\(s\), 0 warning\(s\)'
+expect healthy 'Known problems and workarounds: https://riceharvest.github.io/awesome-b70/#known-problems-and-workarounds'
+expect healthy 'Mesa 25.3.6: updating to 26.1.7 or newer doubled Vulkan decode'
+reject healthy 'Multiple GPUs'
 reject healthy 'Docker'
 
 # 2. i915 bound
@@ -122,6 +131,8 @@ expect wedge 'GPU is WEDGED \(this boot\)'
 expect wedge 'fix: reboot'
 expect wedge 'this boot: 1 compute-engine resets'
 expect wedge 'job_timeout_ms   \(resets at reboot'
+expect wedge 'fix: llama.cpp SYCL / oneAPI apps: try SYCL_UR_USE_LEVEL_ZERO_V2=0'
+expect wedge 'awesome-b70/#gpu-hangs-and-resets'
 expect wedge 'previous boot: 1 engine memory \(CAT\) errors'
 
 # 7. kernel log unreadable
@@ -134,6 +145,17 @@ F=$(case_dir ubuntu); mkfix "$F" os=ubuntu swap=1; writef "$F/log" "$GOODLOG"; :
 run ubuntu "$F" "$F/log" "$F/pkgs" "docker"
 expect ubuntu 'no Intel compute-runtime'; expect ubuntu 'sudo apt install intel-opencl-icd libze-intel-gpu1 libze1'
 expect ubuntu 'swap is on \(/dev/zram0'; expect ubuntu '== Docker =='; expect ubuntu 'ZE_AFFINITY_MASK=0'
+
+# 8b. two B70s: dual-card hints; new Mesa: no update hint
+F=$(case_dir dual); mkfix "$F" dual=1; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"
+writef "$F/pkgs" "intel-compute-runtime 26.18.38308.4
+mesa-vulkan-drivers 26.2.1"
+run dual "$F" "$F/log" "$F/pkgs" ""
+expect dual 'Arc Pro B70 at 0000:0b:00.0'
+expect dual '2 Battlemage cards: known dual-card issues'
+expect dual 'GGML_SYCL_DEV2DEV_MEMCPY=2'
+expect dual 'CCL_SYCL_ALLGATHERV_SIMPLE_THRESHOLD=4294967296 \(SergiioB'
+reject dual 'Mesa 26.2.1: updating'
 
 # 9. no GPU at all
 F=$(case_dir nogpu); mkdir -p "$F/sys/bus/pci/devices" "$F/proc/sys/kernel"; : > "$F/log"; : > "$F/prev.log"; writef "$F/pkgs" ""

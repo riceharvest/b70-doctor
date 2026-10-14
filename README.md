@@ -46,11 +46,11 @@ The exit code is 1 if it found a problem and 0 otherwise, so you can use it in s
 | Resizable BAR | warns when the VRAM BAR is under 1 GiB (ReBAR off) and names the BIOS settings to turn on |
 | permissions | whether you can open `/dev/dri/renderD*`, and which group to join if you can't |
 | SR-IOV | warns when virtual functions are enabled, since they take VRAM from the host |
-| GPU hangs | counts this boot's and the previous boot's xe job timeouts, compute and copy engine resets, CAT errors and **wedges**, shows the last line, and links the matching upstream issues |
+| GPU hangs | counts this boot's and the previous boot's xe job timeouts, compute and copy engine resets, CAT errors and **wedges**, shows the last line, links the matching upstream issues, and prints the reported mitigations |
 | engine timeouts | current `job_timeout_ms` and the max you can raise it to |
 | compute-runtime | Level Zero / OpenCL GPU driver and loader versions, with the install command for Fedora, Ubuntu/Debian or Arch if missing |
-| Vulkan | whether Mesa ANV is installed, plus the current state of llama.cpp Vulkan on Xe2 |
-| several GPUs | how to pin the B70 in llama.cpp SYCL/Vulkan and vLLM |
+| Vulkan | whether Mesa ANV is installed, whether it's older than 26.1.7 (which doubled Vulkan decode on a B580), and the current state of llama.cpp Vulkan on Xe2 |
+| several GPUs | how to pin the B70 in llama.cpp SYCL/Vulkan and vLLM; with two B70s, the tensor-split and TP2 workarounds people found |
 | swap, docker, oneAPI | the container flags that work, a swap note for vLLM UVA offload, and `setvars.sh` |
 
 Sample (a box with Resizable BAR off):
