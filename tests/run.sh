@@ -149,6 +149,14 @@ expect b60 'firmware: GuC 70.65.0, HuC 8.2.10, DMC 2.6'
 expect b60 'pkg: intel-compute-runtime 26.18.38308.4'
 reject b60 '\[ OK \]'
 
+# 10b. json mode: valid JSON, escaped strings, same facts as --report
+F=$(case_dir json); mkfix "$F"; printf 'ID=fedora\nPRETTY_NAME="Weird \\"quoted\\" OS"\n' > "$F/etc/os-release"
+writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
+run json "$F" "$F/log" "$F/pkgs" "" --json
+rc_is json 0
+if printf '%s' "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); g=d["gpus"][0]; assert g["name"]=="Arc Pro B70" and g["guc"]=="70.65.0" and g["bar_bytes"]==34359738368 and d["packages"]["intel-compute-runtime"]=="26.18.38308.4" and "quoted" in d["os"]' 2>/dev/null; then
+  PASS=$((PASS+1)); else FAILN=$((FAILN+1)); echo "FAIL [json]: bad JSON"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fi
+
 # 11. read-only: the fixture tree is unchanged after a run (and nothing writes even with it read-only)
 F=$(case_dir ro); mkfix "$F" vfs=1; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
 before=$(cd "$F" && find . -printf '%p %s %T@\n' | sort | md5sum)

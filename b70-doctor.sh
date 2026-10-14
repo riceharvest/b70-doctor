@@ -5,12 +5,13 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh | bash
 #   bash b70-doctor.sh --report     # paste-ready environment block for bug reports
+#   bash b70-doctor.sh --json       # the same environment as JSON (used by b70-bench)
 #   bash b70-doctor.sh --probe      # also run vulkaninfo / sycl-ls / clinfo (opens the GPU, runs no kernels)
 #
 # https://github.com/riceharvest/b70-doctor  (MIT)
 # Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK.
 
-VERSION=0.1.0
+VERSION=0.2.0
 set -u
 
 R="${B70D_ROOT:-}"
@@ -21,10 +22,11 @@ COLOR=0
 for a in "$@"; do
   case "$a" in
     --report) MODE=report ;;
+    --json) MODE=json ;;
     --probe) PROBE=1 ;;
     --no-color) COLOR=0 ;;
     --version) echo "b70-doctor $VERSION"; exit 0 ;;
-    -h|--help) echo "usage: b70-doctor.sh [--report] [--probe] [--no-color] [--version]"; exit 0 ;;
+    -h|--help) echo "usage: b70-doctor.sh [--report] [--json] [--probe] [--no-color] [--version]"; exit 0 ;;
     *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -157,6 +159,32 @@ bar_bytes() { # largest BAR of the device (the VRAM aperture with ReBAR on); bas
 }
 fw_line() { printf '%s\n' "$KLOG0" | grep -E "xe $1: .*Using $2 firmware" | tail -n1 | sed -E 's/.*version //'; }
 dmc_ver() { printf '%s\n' "$KLOG0" | grep -E "xe $1: .*Finished loading DMC firmware" | tail -n1 | sed -E 's/.*\(v([0-9.]+)\).*/\1/'; }
+
+# --- json mode -------------------------------------------------------------------
+jstr() { local s=${1-}; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/ }; s=${s//$'\t'/ }; printf '"%s"' "$s"; }
+if [ "$MODE" = json ]; then
+  printf '{"tool":"b70-doctor","version":%s,"os":%s,"kernel":%s,"ram_gib":%d,"gpus":[' \
+    "$(jstr "$VERSION")" "$(jstr "$OS_NAME")" "$(jstr "$KREL")" $(( ${MEM_KB:-0} / 1048576 ))
+  first=1
+  for g in "${GPUS[@]}"; do
+    id=$(rd "/sys/bus/pci/devices/$g/device")
+    IFS='|' read -r sp w msp mw rmax <<< "$(slot_link "$g")"
+    [ "$first" = 1 ] || printf ','; first=0
+    printf '{"name":%s,"pci_id":%s,"addr":%s,"driver":%s,"bar_bytes":%s,"link":%s,"link_width":%s,"card_max_link":%s,"slot_max_link":%s,"guc":%s,"huc":%s,"dmc":%s,"ccs_job_timeout_ms":%s,"sriov_vfs":%s}' \
+      "$(jstr "$(gpu_name "$id")")" "$(jstr "8086:${id#0x}")" "$(jstr "$g")" "$(jstr "$(dev_driver "$g")")" \
+      "$(b=$(bar_bytes "$g"); echo "${b:-0}")" "$(jstr "$sp")" "$(jstr "$w")" "$(jstr "$msp")" "$(jstr "$rmax")" \
+      "$(jstr "$(fw_line "$g" GuC | head -c 20)")" "$(jstr "$(fw_line "$g" HuC | head -c 20)")" "$(jstr "$(dmc_ver "$g")")" \
+      "$(jstr "$(rd "/sys/bus/pci/devices/$g/tile0/gt0/engines/ccs/job_timeout_ms")")" "$(jstr "$(rd "/sys/bus/pci/devices/$g/sriov_numvfs")")"
+  done
+  printf '],"packages":{'
+  first=1
+  for p in intel-compute-runtime intel-level-zero intel-opencl intel-opencl-icd libze-intel-gpu1 libze1 oneapi-level-zero level-zero-loader intel-igc-core-2 intel-igc mesa-vulkan-drivers vulkan-intel linux-firmware; do
+    v=$(pkgver "$p"); [ -n "$v" ] || continue
+    [ "$first" = 1 ] || printf ','; first=0; printf '%s:%s' "$(jstr "$p")" "$(jstr "$v")"
+  done
+  printf '},"swap_devices":%d}\n' "$(awk 'NR>1' "$R/proc/swaps" 2>/dev/null | wc -l)"
+  exit 0
+fi
 
 # --- report mode ---------------------------------------------------------------
 if [ "$MODE" = report ]; then

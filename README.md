@@ -25,6 +25,7 @@ bash b70-doctor.sh
 | option | what it does |
 |---|---|
 | `--report` | prints a paste-ready environment block for bug reports (GPU, link, BAR, firmware, timeouts, package versions) |
+| `--json` | the same environment as JSON (b70-bench attaches it to results) |
 | `--probe` | also runs `vulkaninfo --summary`, `sycl-ls` and `clinfo -l`. These open the GPU but run no kernels |
 | `--no-color` | plain output |
 
