@@ -91,6 +91,7 @@ static check confirms system-changing commands only appear inside printed `fix:`
 
 ## Related
 
+- [b70-bench](https://github.com/riceharvest/b70-bench): one standard llama.cpp benchmark (SYCL vs Vulkan, 27B, 32K-depth decode) with a shared results table
 - [b70-qwen38-cookbook](https://github.com/riceharvest/b70-qwen38-cookbook): Qwen3.8-27B with 262K context on one B70 (vLLM)
 
 MIT license.
