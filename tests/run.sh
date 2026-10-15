@@ -252,6 +252,14 @@ reject ro 'Permission denied|Read-only'
 bad=$(grep -nE '^\s*[^#]*\b(sudo|tee|usermod|modprobe|sysctl|swapoff|swapon|rmmod)\b' "$DOC" | grep -vE '\b(fix|why|install_cmd|echo) ' | grep -vE '^\s*[0-9]+:\s*(fedora|debian|arch|\*):')
 if [ -z "$bad" ]; then PASS=$((PASS+1)); else FAILN=$((FAILN+1)); echo "FAIL [static]: possible side effect:"; echo "$bad"; fi
 # any '>' file redirect other than to /dev/null or stderr (awk / $(( )) comparisons excluded)
+# 8g. old glibc: prebuilt builds won't run, image route printed; new glibc: silent
+F=$(case_dir glibc); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
+B70D_GLIBC=2.35 run glibc "$F" "$F/log" "$F/pkgs" ""
+expect glibc 'glibc 2.35: the prebuilt B70 llama.cpp builds need glibc 2.39\+'
+expect glibc 'ghcr.io/riceharvest/b70-llama vulkan'
+B70D_GLIBC=2.42 run glibc2 "$F" "$F/log" "$F/pkgs" ""
+reject glibc2 'need glibc 2.39'
+
 # 8f. serving advice: GDN model on vLLM without --mamba-ssm-cache-dtype; old B70 images
 F=$(case_dir serve); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
 writef "$F/containers" "docker|moe-bench|ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3|2026-10-15T11:43|bash -lc exec vllm serve /w/qwen36-a3b-gptq-palm --max-num-seqs 64 --kv-cache-dtype fp8 PATH=/usr/bin

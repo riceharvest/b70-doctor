@@ -53,6 +53,7 @@ The exit code is 1 if it found a problem and 0 otherwise, so you can use it in s
 | several GPUs | how to pin the B70 in llama.cpp SYCL/Vulkan and vLLM; with two B70s, the tensor-split and TP2 workarounds people found |
 | oneAPI | installed compiler versions (`/opt/intel/oneapi`, `~/intel/oneapi`, `~/oneapi`, `$ONEAPI_ROOT`), warns before 2025.0, `setvars.sh`; without oneAPI it points to [prebuilt B70 binaries](https://github.com/riceharvest/b70-llama-builds) that bundle the runtime |
 | GPU in use | running docker/podman containers that have `/dev/dri` (left-over vLLM containers keep VRAM), **orphaned** vLLM/python/llama processes still holding the GPU after their launcher died, and other non-desktop processes with the GPU open (your own processes only, unless run as root) |
+| glibc | below 2.39 the prebuilt builds won't run; prints the b70-llama image route |
 | swap, docker | the container flags that work and a swap note for vLLM UVA offload; local images with a known newer release (b70-vllm before b70.3; llm-scaler-vllm before 0.26.0-b2, which fixes prefix caching + MTP output) |
 | serving flags | vLLM containers serving a GDN model (Qwen3.5/3.6/3.8, Qwen3-Next) with many concurrent requests and the default fp32 recurrent state: suggests `--mamba-ssm-cache-dtype float16` (halves that state; quality not measured yet, so it is an info, not a warning) |
 

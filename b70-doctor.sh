@@ -12,7 +12,7 @@
 # Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK,
 # B70D_CONTAINERS (lines "runtime|name|image|started"), B70D_DRI_PROCS (lines "pid ppid comm").
 
-VERSION=0.5.0
+VERSION=0.5.1
 set -u
 
 R="${B70D_ROOT:-}"
@@ -520,6 +520,12 @@ if [ -n "$ONEAPI_VERS" ]; then
 else
   info "no oneAPI found: you don't need it to run llama.cpp SYCL on a B70"
   why "prebuilt SYCL binaries (AOT for the B70, oneAPI runtime bundled): $BUILDS"
+fi
+GLIBC=${B70D_GLIBC-$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')}
+if [ -n "$GLIBC" ] && ver_lt "$GLIBC" 2.39; then
+  info "glibc $GLIBC: the prebuilt B70 llama.cpp builds need glibc 2.39+ (Ubuntu 24.04+, Fedora 40+, Debian 13+)"
+  why "The b70-llama container image has both builds and its own userspace (Mesa 26, compute-runtime), so it runs here:"
+  fix "docker run --rm -it --device /dev/dri -v ~/models:/models -p 8080:8080 ghcr.io/riceharvest/b70-llama vulkan -m /models/<model>.gguf"
 fi
 if [ -d "$R/opt/intel/oneapi" ] && [ -z "${ONEAPI_ROOT:-}" ]; then
   info "oneAPI is installed but not loaded in this shell"
