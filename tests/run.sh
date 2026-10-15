@@ -56,12 +56,15 @@ Oct 14 kernel: xe 0000:09:00.0: [drm] Tile0: GT0: Using GuC firmware from xe/bmg
 Oct 14 kernel: xe 0000:09:00.0: [drm] Tile0: GT1: Using HuC firmware from xe/bmg_huc.bin version 8.2.10'
 GOODPKGS='intel-compute-runtime 26.18.38308.4
 oneapi-level-zero 1.28.6
-mesa-vulkan-drivers 25.3.6'
+mesa-vulkan-drivers 26.2.5'
 
 # run NAME FIXDIR LOGFILE PKGFILE HAVE [args...] -> sets OUT, RC
 run() {
   local F=$2
+  # never touch the real docker/podman or /proc: containers and GPU processes come from fixture files
   OUT=$(B70D_ROOT="$F" B70D_JOURNAL="$3" B70D_JOURNAL_PREV="$F/prev.log" B70D_PKGS="$4" B70D_HAVE="$5" \
+        B70D_CONTAINERS="${CONTAINERS:-/dev/null}" B70D_DRI_PROCS="${DRIPROCS:-/dev/null}" HOME=/home \
+        env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES -u ONEAPI_ROOT ${VKDF:+VK_DRIVER_FILES=$VKDF} \
         bash "$DOC" --no-color "${@:6}" 2>&1); RC=$?
 }
 expect() { # NAME PATTERN
@@ -76,7 +79,7 @@ case_dir() { local d="$TMP/$1"; mkdir -p "$d"; echo "$d"; }
 writef() { printf '%s\n' "$2" > "$1"; }
 
 # 1. healthy box
-F=$(case_dir healthy); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
+F=$(case_dir healthy); mkfix "$F"; mkdir -p "$F/opt/intel/oneapi/compiler/2025.3" "$F/opt/intel/oneapi/compiler/latest"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
 run healthy "$F" "$F/log" "$F/pkgs" ""
 rc_is healthy 0
 expect healthy 'Arc Pro B70 at 0000:09:00.0'
@@ -88,7 +91,9 @@ expect healthy 'you can open /dev/dri/renderD128'
 expect healthy 'compute-runtime: intel-compute-runtime 26.18'
 expect healthy 'Summary: 0 problem\(s\), 0 warning\(s\)'
 expect healthy 'Known problems and workarounds: https://riceharvest.github.io/awesome-b70/#known-problems-and-workarounds'
-expect healthy 'Mesa 25.3.6: updating to 26.1.7 or newer doubled Vulkan decode'
+expect healthy 'oneAPI compiler: 2025.3 \(seen working'
+reject healthy 'Mesa 26.2.5'
+reject healthy 'GPU in use'
 reject healthy 'Multiple GPUs'
 reject healthy 'Docker'
 
@@ -156,6 +161,55 @@ expect dual '2 Battlemage cards: known dual-card issues'
 expect dual 'GGML_SYCL_DEV2DEV_MEMCPY=2'
 expect dual 'CCL_SYCL_ALLGATHERV_SIMPLE_THRESHOLD=4294967296 \(SergiioB'
 reject dual 'Mesa 26.2.1: updating'
+
+# 8c. Mesa 25 warns with the local-prefix route; old Mesa 26.1 only gets the info line; VK_DRIVER_FILES overrides
+F=$(case_dir mesa25); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"
+writef "$F/pkgs" "intel-compute-runtime 26.18.38308.4
+oneapi-level-zero 1.28.6
+mesa-vulkan-drivers 25.3.6"
+run mesa25 "$F" "$F/log" "$F/pkgs" ""
+rc_is mesa25 0
+expect mesa25 '\[WARN\] Mesa 25.3.6 is older than 26'
+expect mesa25 'VK_DRIVER_FILES=<prefix>/share/vulkan/icd.d/intel_icd.x86_64.json'
+expect mesa25 'no oneAPI found: you don.t need it'
+expect mesa25 'riceharvest/b70-llama-builds'
+VKDF=/opt/mesa26/share/vulkan/icd.d/intel_icd.x86_64.json run mesa25vk "$F" "$F/log" "$F/pkgs" ""
+expect mesa25vk 'Vulkan apps use /opt/mesa26/share/vulkan/icd.d/intel_icd.x86_64.json, not the distro Mesa 25.3.6'
+reject mesa25vk 'older than 26'
+writef "$F/pkgs" "intel-compute-runtime 26.18.38308.4
+oneapi-level-zero 1.28.6
+mesa-vulkan-drivers 26.1.2"
+run mesa261 "$F" "$F/log" "$F/pkgs" ""
+expect mesa261 'Mesa 26.1.2: updating to 26.1.7'; reject mesa261 'WARN'
+
+# 8d. old oneAPI in the user's home, compute-runtime 25.40 without a Level Zero loader
+F=$(case_dir oldstack); mkfix "$F"; mkdir -p "$F/home/oneapi/compiler/2024.2"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"
+writef "$F/pkgs" "intel-compute-runtime 25.40.35563.4
+mesa-vulkan-drivers 26.2.5"
+run oldstack "$F" "$F/log" "$F/pkgs" ""
+expect oldstack '\[WARN\] oneAPI 2024.2 predates Battlemage'
+expect oldstack 'Level Zero loader \(libze_loader.so.1\) is missing'
+expect oldstack 'compute-runtime 25.40.35563.4: 25.48 and newer lowered'
+mkdir -p "$F/usr/lib64"; : > "$F/usr/lib64/libze_loader.so.1"
+run oldstack2 "$F" "$F/log" "$F/pkgs" ""
+expect oldstack2 '\[ OK \] Level Zero loader: /usr/lib64/libze_loader.so.1'
+
+# 8e. GPU in use: a leftover container, an orphaned vLLM worker, a desktop compositor (ignored)
+F=$(case_dir gpuuse); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
+writef "$F/containers" "docker|vllm-old|intel/vllm:0.31-xpu|2026-10-15T07:12"
+writef "$F/procs" "4242 1 VLLM::Worker_TP
+2000 1999 gnome-shell
+5151 5100 llama-server"
+CONTAINERS="$F/containers" DRIPROCS="$F/procs" run gpuuse "$F" "$F/log" "$F/pkgs" ""
+expect gpuuse '== GPU in use =='
+expect gpuuse 'docker container vllm-old \(intel/vllm:0.31-xpu\) has the GPU, running since 2026-10-15 07:12'
+expect gpuuse 'docker rm -f <name>'
+expect gpuuse '\[WARN\] orphaned GPU process\(es\), parent gone: VLLM::Worker_TP \(pid 4242\)'
+expect gpuuse 'other processes with the GPU open: llama-server \(pid 5151\)'
+reject gpuuse 'gnome-shell'
+CONTAINERS="$F/containers" DRIPROCS="$F/procs" run gpuusej "$F" "$F/log" "$F/pkgs" "" --json
+if printf '%s' "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["gpu_containers"]==1' 2>/dev/null; then
+  PASS=$((PASS+1)); else FAILN=$((FAILN+1)); echo "FAIL [gpuusej]: json gpu_containers"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fi
 
 # 9. no GPU at all
 F=$(case_dir nogpu); mkdir -p "$F/sys/bus/pci/devices" "$F/proc/sys/kernel"; : > "$F/log"; : > "$F/prev.log"; writef "$F/pkgs" ""

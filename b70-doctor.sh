@@ -9,9 +9,10 @@
 #   bash b70-doctor.sh --probe      # also run vulkaninfo / sycl-ls / clinfo (opens the GPU, runs no kernels)
 #
 # https://github.com/riceharvest/b70-doctor  (MIT)
-# Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK.
+# Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK,
+# B70D_CONTAINERS (lines "runtime|name|image|started"), B70D_DRI_PROCS (lines "pid ppid comm").
 
-VERSION=0.3.2
+VERSION=0.4.0
 set -u
 
 R="${B70D_ROOT:-}"
@@ -35,6 +36,8 @@ done
 GOOD_KERNEL="7.0 (Ubuntu 26.04), 7.1.8 (Fedora 43)"
 GOOD_GUC="70.65.0"
 GOOD_CR="26.18 (Fedora 43), 26.27 (vLLM 0.31 XPU image)"
+GOOD_ONEAPI="2025.3, 2026.0, 2026.1"
+BUILDS="https://github.com/riceharvest/b70-llama-builds"
 HUB="https://riceharvest.github.io/awesome-b70/"
 
 NFAIL=0; NWARN=0
@@ -79,6 +82,39 @@ pkgs() {
   fi
 }
 pkgver() { printf '%s\n' "$PKGS" | awk -v n="$1" '$1==n{print $2; exit}'; }
+ver_lt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]; }
+# oneAPI compiler versions found, newest last ("2025.3 2026.1")
+oneapi_versions() {
+  local b d out=""
+  for b in "$R/opt/intel/oneapi" "${ONEAPI_ROOT:+$R$ONEAPI_ROOT}" "${HOME:+$R$HOME/intel/oneapi}" "${HOME:+$R$HOME/oneapi}"; do
+    [ -n "$b" ] && [ -d "$b/compiler" ] || continue
+    for d in "$b"/compiler/*; do
+      d=${d##*/}; case "$d" in 20[0-9][0-9].[0-9]*) out="$out $d" ;; esac
+    done
+  done
+  printf '%s\n' $out | sort -uV | tr '\n' ' ' | sed 's/ $//'
+}
+# Running containers that were given the GPU: "runtime|name|image|started"
+gpu_containers() {
+  if [ -n "${B70D_CONTAINERS+x}" ]; then cat "$B70D_CONTAINERS" 2>/dev/null; return; fi
+  local rt id
+  for rt in docker podman; do
+    have "$rt" || continue
+    for id in $("$rt" ps -q 2>/dev/null); do
+      "$rt" inspect --format "$rt|{{.Name}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.HostConfig.Privileged}}|{{range .HostConfig.Devices}}{{.PathOnHost}},{{end}}" "$id" 2>/dev/null
+    done | awk -F'|' '$5=="true" || $6 ~ /\/dev\/dri/ {sub(/^\//,"",$2); print $1"|"$2"|"$3"|"substr($4,1,16)}'
+  done
+}
+# Processes with a GPU render node open (own processes only without root): "pid ppid comm"
+dri_procs() {
+  if [ -n "${B70D_DRI_PROCS+x}" ]; then cat "$B70D_DRI_PROCS" 2>/dev/null; return; fi
+  local f pid
+  find "$R"/proc/[0-9]*/fd -maxdepth 1 -lname '/dev/dri/renderD*' 2>/dev/null | while IFS= read -r f; do
+    pid=${f%/fd/*}; pid=${pid##*/}; printf '%s\n' "$pid"
+  done | sort -un | while IFS= read -r pid; do
+    printf '%s %s %s\n' "$pid" "$(awk '/^PPid:/{print $2}' "$R/proc/$pid/status" 2>/dev/null)" "$(cat "$R/proc/$pid/comm" 2>/dev/null)"
+  done
+}
 
 OS_ID=$(. "$R/etc/os-release" 2>/dev/null; echo "${ID:-unknown}")
 OS_LIKE=$(. "$R/etc/os-release" 2>/dev/null; echo "${ID_LIKE:-}")
@@ -183,7 +219,8 @@ if [ "$MODE" = json ]; then
     v=$(pkgver "$p"); [ -n "$v" ] || continue
     [ "$first" = 1 ] || printf ','; first=0; printf '%s:%s' "$(jstr "$p")" "$(jstr "$v")"
   done
-  printf '},"swap_devices":%d}\n' "$(awk 'NR>1' "$R/proc/swaps" 2>/dev/null | wc -l)"
+  printf '},"swap_devices":%d,"oneapi":%s,"vk_driver_files":%s,"gpu_containers":%d}\n' "$(awk 'NR>1' "$R/proc/swaps" 2>/dev/null | wc -l)" \
+    "$(jstr "$(oneapi_versions)")" "$(jstr "${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}")" "$(gpu_containers | grep -c .)"
   exit 0
 fi
 
@@ -204,6 +241,8 @@ if [ "$MODE" = report ]; then
     v=$(pkgver "$p"); [ -n "$v" ] && echo "pkg: $p $v"
   done
   sw=$(awk 'NR>1' "$R/proc/swaps" 2>/dev/null | wc -l); echo "swap devices active: $sw"
+  echo "oneAPI: $(oneapi_versions)"; echo "VK_DRIVER_FILES: ${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}"
+  echo "GPU containers running: $(gpu_containers | grep -c .)"
   echo '```'
   exit 0
 fi
@@ -402,7 +441,22 @@ else
   fi
 fi
 lz=""; for p in oneapi-level-zero libze1 level-zero-loader level-zero; do v=$(pkgver "$p"); [ -n "$v" ] && { lz="$p $v"; break; }; done
-[ -n "$lz" ] && ok "Level Zero loader: $lz"
+if [ -n "$lz" ]; then
+  ok "Level Zero loader: $lz"
+elif [ -n "$cr" ]; then
+  zl=""; for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib; do [ -e "$R$d/libze_loader.so.1" ] && zl="$d/libze_loader.so.1"; done
+  if [ -n "$zl" ]; then ok "Level Zero loader: $zl"
+  else
+    warn "compute-runtime is installed but the Level Zero loader (libze_loader.so.1) is missing"
+    why "llama.cpp SYCL, oneAPI apps and the prebuilt SYCL binaries load the GPU through it."
+    fix "$(install_cmd compute)"
+  fi
+fi
+crv=$(printf '%s' "${cr#* }" | sed -E 's/^[0-9]+://; s/[^0-9.].*$//')
+if [ -n "$cr" ] && [ -n "$crv" ] && [ "${crv%%.*}" = 25 ] && ver_lt "$crv" 25.48; then
+  info "compute-runtime $crv: 25.48 and newer lowered the B70 reset/DEVICE_LOST rate (compute-runtime#944)"
+  why "releases: https://github.com/intel/compute-runtime/releases"
+fi
 
 if [ -e "$R/usr/share/vulkan/icd.d/intel_icd.x86_64.json" ] || [ -e "$R/usr/share/vulkan/icd.d/intel_icd.json" ]; then
   mv=""; for p in mesa-vulkan-drivers vulkan-intel; do v=$(pkgver "$p"); [ -n "$v" ] && { mv="$p $v"; break; }; done
@@ -413,7 +467,16 @@ if [ -e "$R/usr/share/vulkan/icd.d/intel_icd.x86_64.json" ] || [ -e "$R/usr/shar
   why "newer Mesa narrows the decode gap, one report has Vulkan level with SYCL on Mesa 26.1):"
   why "https://riceharvest.github.io/awesome-b70/#measured-sycl-vs-vulkan-on-a-b70"
   mver=$(printf '%s' "${mv#* }" | sed -E 's/^[0-9]+://; s/[^0-9.].*$//')
-  if [ -n "$mver" ] && [ "$(printf '%s\n26.1.7\n' "$mver" | sort -V | head -n1)" != "26.1.7" ]; then
+  vkd="${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}"
+  if [ -n "$vkd" ]; then
+    info "VK_DRIVER_FILES/VK_ICD_FILENAMES is set in this shell: Vulkan apps use $vkd, not the distro Mesa${mver:+ $mver}"
+  elif [ -n "$mver" ] && ver_lt "$mver" 26.0; then
+    warn "Mesa $mver is older than 26: Vulkan LLM decode on Battlemage is much slower on Mesa 25.x"
+    why "Updating to 26.1.7 or newer doubled Vulkan decode on a B580 (llama.cpp discussion #27777); a B70 report has"
+    why "llama.cpp Vulkan level with SYCL on Mesa 26.1. Only matters for Vulkan apps (llama.cpp Vulkan, Ollama, LM Studio)."
+    fix "update Mesa to 26.1.7+ (newer distro release or backports), or build Mesa into a local prefix and point only"
+    why "     LLM apps at it: VK_DRIVER_FILES=<prefix>/share/vulkan/icd.d/intel_icd.x86_64.json <app>   (or use llama.cpp SYCL)"
+  elif [ -n "$mver" ] && ver_lt "$mver" 26.1.7; then
     info "Mesa $mver: updating to 26.1.7 or newer doubled Vulkan decode on a B580 (llama.cpp discussion #27777)"
   fi
 else
@@ -421,6 +484,19 @@ else
   fix "$(install_cmd vulkan)"
 fi
 
+ONEAPI_VERS=$(oneapi_versions)
+if [ -n "$ONEAPI_VERS" ]; then
+  newest=${ONEAPI_VERS##* }
+  if ver_lt "$newest" 2025.0; then
+    warn "oneAPI $newest predates Battlemage; B70 llama.cpp SYCL builds use 2025.3 or newer"
+    fix "install a current oneAPI Base Toolkit, or use prebuilt B70 binaries that bundle the runtime: $BUILDS"
+  else
+    ok "oneAPI compiler: $ONEAPI_VERS (seen working on a B70: $GOOD_ONEAPI)"
+  fi
+else
+  info "no oneAPI found: you don't need it to run llama.cpp SYCL on a B70"
+  why "prebuilt SYCL binaries (AOT for the B70, oneAPI runtime bundled): $BUILDS"
+fi
 if [ -d "$R/opt/intel/oneapi" ] && [ -z "${ONEAPI_ROOT:-}" ]; then
   info "oneAPI is installed but not loaded in this shell"
   fix "source /opt/intel/oneapi/setvars.sh   (before building or running llama.cpp SYCL)"
@@ -447,6 +523,30 @@ if have docker; then
   rg=$(stat -c %g "$R/dev/dri/renderD128" 2>/dev/null)
   info "run GPU containers with: --device /dev/dri --group-add ${rg:-<render gid>}"
   why "vLLM XPU: also pass -e ZE_AFFINITY_MASK=0 (pick the card); on a B70 with vLLM UVA offload, leaving it out gave UR OUT_OF_DEVICE_MEMORY."
+fi
+
+# --- GPU users ---------------------------------------------------------------------------
+CONTAINERS=$(gpu_containers)
+DRIP=$(dri_procs)
+if [ -n "$CONTAINERS" ] || [ -n "$DRIP" ]; then
+  section "GPU in use"
+  if [ -n "$CONTAINERS" ]; then
+    while IFS='|' read -r crt cname cimg cstart; do
+      [ -n "$cname" ] || continue
+      info "$crt container $cname ($cimg) has the GPU, running since ${cstart/T/ }"
+    done <<< "$CONTAINERS"
+    why "A container left over from an earlier job keeps VRAM and can keep running kernels. On one B70, leftover vLLM"
+    why "workers kept running and faulted the GPU during later jobs."
+    fix "if it's left over: docker rm -f <name>   (podman rm -f <name>)"
+  fi
+  orphans=$(printf '%s\n' "$DRIP" | awk '$2==1 && $3 ~ /^(VLLM|vllm|python|python3|llama|ollama|ray|torchrun|pt_main_thread)/ {print $3" (pid "$1")"}' | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+  if [ -n "$orphans" ]; then
+    warn "orphaned GPU process(es), parent gone: $orphans"
+    why "Their launcher exited but they still hold the GPU (and VRAM). Typical after a killed vLLM or llama.cpp run."
+    fix "kill <pid>   (check with: ps -o pid,etime,args -p <pid>)"
+  fi
+  others=$(printf '%s\n' "$DRIP" | awk '$2!=1 && $3 !~ /^(gnome-|kwin|Xorg|Xwayland|xwayland|plasma|kde|krunner|mutter|sway|Hyprland|weston|firefox|chrome|chromium|brave|Web Content|code|electron|steam|obs|gst|mpv|vlc|discord|slack|spotify)/ && NF>=3 {print $3" (pid "$1")"}' | sort -u | head -n 8 | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+  [ -n "$others" ] && info "other processes with the GPU open: $others"
 fi
 
 # --- probe -------------------------------------------------------------------------------

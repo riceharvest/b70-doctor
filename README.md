@@ -48,10 +48,12 @@ The exit code is 1 if it found a problem and 0 otherwise, so you can use it in s
 | SR-IOV | warns when virtual functions are enabled, since they take VRAM from the host |
 | GPU hangs | counts this boot's and the previous boot's xe job timeouts, compute and copy engine resets, CAT errors and **wedges**, shows the last line, links the matching upstream issues, and prints the reported mitigations |
 | engine timeouts | current `job_timeout_ms` and the max you can raise it to |
-| compute-runtime | Level Zero / OpenCL GPU driver and loader versions, with the install command for Fedora, Ubuntu/Debian or Arch if missing |
-| Vulkan | whether Mesa ANV is installed, whether it's older than 26.1.7 (which doubled Vulkan decode on a B580), and the current state of llama.cpp Vulkan on Xe2 |
+| compute-runtime | Level Zero / OpenCL GPU driver and loader versions, with the install command for Fedora, Ubuntu/Debian or Arch if missing; warns when the Level Zero loader (`libze_loader.so.1`) is missing; notes 25.x releases before 25.48 (higher reset rate) |
+| Vulkan | whether Mesa ANV is installed; **warns on Mesa 25.x** and shows how to run a newer Mesa from a local prefix with `VK_DRIVER_FILES`; notes 26.0-26.1.6 (26.1.7 doubled Vulkan decode on a B580); reports a `VK_DRIVER_FILES` override; the current state of llama.cpp Vulkan on Xe2 |
 | several GPUs | how to pin the B70 in llama.cpp SYCL/Vulkan and vLLM; with two B70s, the tensor-split and TP2 workarounds people found |
-| swap, docker, oneAPI | the container flags that work, a swap note for vLLM UVA offload, and `setvars.sh` |
+| oneAPI | installed compiler versions (`/opt/intel/oneapi`, `~/intel/oneapi`, `~/oneapi`, `$ONEAPI_ROOT`), warns before 2025.0, `setvars.sh`; without oneAPI it points to [prebuilt B70 binaries](https://github.com/riceharvest/b70-llama-builds) that bundle the runtime |
+| GPU in use | running docker/podman containers that have `/dev/dri` (left-over vLLM containers keep VRAM), **orphaned** vLLM/python/llama processes still holding the GPU after their launcher died, and other non-desktop processes with the GPU open (your own processes only, unless run as root) |
+| swap, docker | the container flags that work and a swap note for vLLM UVA offload |
 
 Sample (a box with Resizable BAR off):
 
@@ -74,7 +76,7 @@ These are versions I've run a B70 on. They aren't minimums.
 
 - kernel 7.0 (Ubuntu 26.04) and 7.1.8 (Fedora 43)
 - GuC 70.65.0, HuC 8.2.10, DMC 2.6 (linux-firmware 20260622)
-- compute-runtime 26.18 (Fedora 43), 26.27 (vLLM 0.31 XPU image), Mesa 25.3.6
+- compute-runtime 26.18 (Fedora 43), 26.27 (vLLM 0.31 XPU image); oneAPI 2025.3, 2026.0, 2026.1; Mesa 26.1.7+ for Vulkan
 
 If your box works with other versions, or the doctor says something wrong about it, please open an issue with the
 `--report` output.
