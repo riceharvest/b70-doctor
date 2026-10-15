@@ -12,7 +12,7 @@
 # Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK,
 # B70D_CONTAINERS (lines "runtime|name|image|started"), B70D_DRI_PROCS (lines "pid ppid comm").
 
-VERSION=0.4.0
+VERSION=0.4.1
 set -u
 
 R="${B70D_ROOT:-}"
@@ -462,18 +462,22 @@ if [ -e "$R/usr/share/vulkan/icd.d/intel_icd.x86_64.json" ] || [ -e "$R/usr/shar
   mv=""; for p in mesa-vulkan-drivers vulkan-intel; do v=$(pkgver "$p"); [ -n "$v" ] && { mv="$p $v"; break; }; done
   ok "Vulkan: Mesa ANV installed${mv:+ ($mv)}"
   why "llama.cpp Vulkan on Xe2: flash attention falls back to a slow scalar path (llama.cpp#30503, #27638)."
-  info "Want speed? Use llama.cpp SYCL. On a B70 it decoded 1.7x faster than Vulkan (what Ollama and LM Studio use)"
-  why "and ran prompts after 32K of context 8x faster (Qwen3.8-27B Q4_K_XL, llama.cpp master 2026-10-14, Mesa 25.3.6;"
-  why "newer Mesa narrows the decode gap, one report has Vulkan level with SYCL on Mesa 26.1):"
-  why "https://riceharvest.github.io/awesome-b70/#measured-sycl-vs-vulkan-on-a-b70"
   mver=$(printf '%s' "${mv#* }" | sed -E 's/^[0-9]+://; s/[^0-9.].*$//')
   vkd="${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}"
+  if [ -z "$vkd" ] && [ -n "$mver" ] && ver_lt "$mver" 26.0; then
+    info "Want speed? On Mesa 25.x use llama.cpp SYCL: on a B70 it decoded 1.7x faster than Vulkan (what Ollama and"
+    why "LM Studio use) and ran prompts after 32K of context 8x faster (Qwen3.8-27B Q4_K_XL, Mesa 25.3.6)."
+  else
+    info "Vulkan decode on Mesa 26 is close to llama.cpp SYCL on a B70 (Mesa 26.2.5: 35B-A3B MoE 86 vs SYCL 98 tok/s,"
+    why "27B 22.9 vs 21.9; short prompts ~10% slower than on Mesa 25). For long context, SYCL is still much faster."
+  fi
+  why "https://riceharvest.github.io/awesome-b70/#measured-sycl-vs-vulkan-on-a-b70"
   if [ -n "$vkd" ]; then
     info "VK_DRIVER_FILES/VK_ICD_FILENAMES is set in this shell: Vulkan apps use $vkd, not the distro Mesa${mver:+ $mver}"
   elif [ -n "$mver" ] && ver_lt "$mver" 26.0; then
     warn "Mesa $mver is older than 26: Vulkan LLM decode on Battlemage is much slower on Mesa 25.x"
-    why "Updating to 26.1.7 or newer doubled Vulkan decode on a B580 (llama.cpp discussion #27777); a B70 report has"
-    why "llama.cpp Vulkan level with SYCL on Mesa 26.1. Only matters for Vulkan apps (llama.cpp Vulkan, Ollama, LM Studio)."
+    why "On a B70, Mesa 26.2.5 took llama.cpp Vulkan decode from 39 to 86 tok/s (Qwen3.6-35B-A3B) and 13.2 to 22.9 (Qwen3.8-27B),"
+    why "close to SYCL. Only matters for Vulkan apps (llama.cpp Vulkan, Ollama, LM Studio)."
     fix "update Mesa to 26.1.7+ (newer distro release or backports), or build Mesa into a local prefix and point only"
     why "     LLM apps at it: VK_DRIVER_FILES=<prefix>/share/vulkan/icd.d/intel_icd.x86_64.json <app>   (or use llama.cpp SYCL)"
   elif [ -n "$mver" ] && ver_lt "$mver" 26.1.7; then
