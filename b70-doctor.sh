@@ -11,7 +11,7 @@
 # https://github.com/riceharvest/b70-doctor  (MIT)
 # Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK.
 
-VERSION=0.3.0
+VERSION=0.3.1
 set -u
 
 R="${B70D_ROOT:-}"
@@ -408,7 +408,9 @@ if [ -e "$R/usr/share/vulkan/icd.d/intel_icd.x86_64.json" ] || [ -e "$R/usr/shar
   mv=""; for p in mesa-vulkan-drivers vulkan-intel; do v=$(pkgver "$p"); [ -n "$v" ] && { mv="$p $v"; break; }; done
   ok "Vulkan: Mesa ANV installed${mv:+ ($mv)}"
   why "llama.cpp Vulkan on Xe2: flash attention falls back to a slow scalar path (llama.cpp#30503, #27638)."
-  why "At long context SYCL is usually faster (llama.cpp#28721)."
+  info "Want speed? Use llama.cpp SYCL. On a B70 it decoded 1.7x faster than Vulkan (what Ollama and LM Studio use)"
+  why "and ran prompts after 32K of context 8x faster (Qwen3.8-27B Q4_K_XL, llama.cpp master 2026-10-14):"
+  why "https://riceharvest.github.io/awesome-b70/#measured-sycl-vs-vulkan-on-a-b70"
   mver=$(printf '%s' "${mv#* }" | sed -E 's/^[0-9]+://; s/[^0-9.].*$//')
   if [ -n "$mver" ] && [ "$(printf '%s\n26.1.7\n' "$mver" | sort -V | head -n1)" != "26.1.7" ]; then
     info "Mesa $mver: updating to 26.1.7 or newer doubled Vulkan decode on a B580 (llama.cpp discussion #27777)"
