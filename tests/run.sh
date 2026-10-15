@@ -39,7 +39,7 @@ mkfix() {
   printf 'Filename\tType\tSize\tUsed\tPriority\n' > "$F/proc/swaps"
   [ "$swap" = 1 ] && printf '/dev/zram0\tpartition\t8388604\t0\t100\n' >> "$F/proc/swaps"
   case "$os" in
-    fedora) printf 'ID=fedora\nPRETTY_NAME="Fedora Linux 43"\n' > "$F/etc/os-release" ;;
+    fedora) printf 'ID=fedora\nVERSION_ID=43\nPRETTY_NAME="Fedora Linux 43"\n' > "$F/etc/os-release" ;;
     ubuntu) printf 'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 26.04 LTS"\n' > "$F/etc/os-release" ;;
   esac
   : > "$F/usr/share/vulkan/icd.d/intel_icd.x86_64.json"
@@ -63,7 +63,7 @@ run() {
   local F=$2
   # never touch the real docker/podman or /proc: containers and GPU processes come from fixture files
   OUT=$(B70D_ROOT="$F" B70D_JOURNAL="$3" B70D_JOURNAL_PREV="$F/prev.log" B70D_PKGS="$4" B70D_HAVE="$5" \
-        B70D_CONTAINERS="${CONTAINERS:-/dev/null}" B70D_DRI_PROCS="${DRIPROCS:-/dev/null}" HOME=/home \
+        B70D_CONTAINERS="${CONTAINERS:-/dev/null}" B70D_DRI_PROCS="${DRIPROCS:-/dev/null}" B70D_IMAGES="${IMAGES:-/dev/null}" HOME=/home \
         env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES -u ONEAPI_ROOT ${VKDF:+VK_DRIVER_FILES=$VKDF} \
         bash "$DOC" --no-color "${@:6}" 2>&1); RC=$?
 }
@@ -150,7 +150,7 @@ expect nolog "can't read the kernel log"; reject nolog 'GuC firmware'
 # 8. Ubuntu without compute-runtime, with docker + swap
 F=$(case_dir ubuntu); mkfix "$F" os=ubuntu swap=1; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" 'mesa-vulkan-drivers 25.2.0'
 run ubuntu "$F" "$F/log" "$F/pkgs" "docker"
-expect ubuntu 'no Intel compute-runtime'; expect ubuntu 'sudo apt install intel-opencl-icd libze-intel-gpu1 libze1'
+expect ubuntu 'fix: sudo add-apt-repository ppa:kisak/kisak-mesa'; expect ubuntu 'no Intel compute-runtime'; expect ubuntu 'sudo apt install intel-opencl-icd libze-intel-gpu1 libze1'
 expect ubuntu 'swap is on \(/dev/zram0'; expect ubuntu '== Docker =='; expect ubuntu 'ZE_AFFINITY_MASK=0'
 
 # 8b. two B70s: dual-card hints; new Mesa: no update hint
@@ -177,6 +177,8 @@ expect mesa25 'no oneAPI found: you don.t need it'
 expect mesa25 'riceharvest/b70-llama-builds'
 expect mesa25 'Want speed\? On Mesa 25.x use llama.cpp SYCL'
 expect mesa25 'Mesa 26.2.5 took llama.cpp Vulkan decode from 39 to 86'
+expect mesa25 'fix: Fedora 44 ships Mesa 26.2.4 \(Fedora 43 updates have 25.x\): sudo dnf system-upgrade download --releasever=44'
+expect mesa25 'ghcr.io/riceharvest/b70-llama vulkan -m /models/<model>.gguf'
 VKDF=/opt/mesa26/share/vulkan/icd.d/intel_icd.x86_64.json run mesa25vk "$F" "$F/log" "$F/pkgs" ""
 expect mesa25vk 'Vulkan apps use /opt/mesa26/share/vulkan/icd.d/intel_icd.x86_64.json, not the distro Mesa 25.3.6'
 reject mesa25vk 'older than 26'
@@ -250,6 +252,26 @@ reject ro 'Permission denied|Read-only'
 bad=$(grep -nE '^\s*[^#]*\b(sudo|tee|usermod|modprobe|sysctl|swapoff|swapon|rmmod)\b' "$DOC" | grep -vE '\b(fix|why|install_cmd|echo) ' | grep -vE '^\s*[0-9]+:\s*(fedora|debian|arch|\*):')
 if [ -z "$bad" ]; then PASS=$((PASS+1)); else FAILN=$((FAILN+1)); echo "FAIL [static]: possible side effect:"; echo "$bad"; fi
 # any '>' file redirect other than to /dev/null or stderr (awk / $(( )) comparisons excluded)
+# 8f. serving advice: GDN model on vLLM without --mamba-ssm-cache-dtype; old B70 images
+F=$(case_dir serve); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
+writef "$F/containers" "docker|moe-bench|ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3|2026-10-15T11:43|bash -lc exec vllm serve /w/qwen36-a3b-gptq-palm --max-num-seqs 64 --kv-cache-dtype fp8 PATH=/usr/bin
+docker|small|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3.8-27B --max-num-seqs 4
+docker|fp16|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3.6-35B-A3B --mamba-ssm-cache-dtype float16
+docker|llama|ghcr.io/riceharvest/b70-llama:latest|2026-10-15T11:43|/usr/local/bin/b70-llama vulkan -m /models/x.gguf"
+writef "$F/images" "ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1
+ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3
+intel/llm-scaler-vllm:0.25.1-b3
+intel/llm-scaler-vllm:0.26.0-b2
+intel/llm-scaler-vllm:latest"
+CONTAINERS="$F/containers" IMAGES="$F/images" run serve "$F" "$F/log" "$F/pkgs" "docker"
+expect serve 'moe-bench: GDN model served with the default fp32 recurrent state and up to 64 concurrent requests'
+expect serve 'fix: add --mamba-ssm-cache-dtype float16 to the vllm serve arguments of moe-bench'
+reject serve 'small: GDN model'; reject serve 'fp16: GDN model'; reject serve 'llama: GDN model'
+expect serve 'ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1 is older than ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3'
+reject serve 'b70-vllm:v0.31.0-b70.3 is older'
+expect serve '\[WARN\] intel/llm-scaler-vllm:0.25.1-b3: prefix caching \+ MTP'
+reject serve 'llm-scaler-vllm:0.26.0-b2: prefix'; reject serve 'llm-scaler-vllm:latest: prefix'
+
 bad=$(sed -E 's#[0-9&]*>[[:space:]]*/dev/null##g; s#>&2##g' "$DOC" | grep -nE '[^-=<]>[^=&]' | grep -vE 'awk |\$\(\(|^[0-9]+:\s*#|^[0-9]+:\s*(info|warn|fail|ok|why|fix) "')
 if [ -z "$bad" ]; then PASS=$((PASS+1)); else FAILN=$((FAILN+1)); echo "FAIL [static]: write redirect:"; echo "$bad"; fi
 

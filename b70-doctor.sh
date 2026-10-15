@@ -12,7 +12,7 @@
 # Test hooks (fixtures): B70D_ROOT, B70D_JOURNAL, B70D_JOURNAL_PREV, B70D_PKGS, B70D_HAVE, B70D_ENV_SWAPCHECK,
 # B70D_CONTAINERS (lines "runtime|name|image|started"), B70D_DRI_PROCS (lines "pid ppid comm").
 
-VERSION=0.4.1
+VERSION=0.5.0
 set -u
 
 R="${B70D_ROOT:-}"
@@ -101,9 +101,19 @@ gpu_containers() {
   for rt in docker podman; do
     have "$rt" || continue
     for id in $("$rt" ps -q 2>/dev/null); do
-      "$rt" inspect --format "$rt|{{.Name}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.HostConfig.Privileged}}|{{range .HostConfig.Devices}}{{.PathOnHost}},{{end}}" "$id" 2>/dev/null
-    done | awk -F'|' '$5=="true" || $6 ~ /\/dev\/dri/ {sub(/^\//,"",$2); print $1"|"$2"|"$3"|"substr($4,1,16)}'
+      "$rt" inspect --format "$rt|{{.Name}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.HostConfig.Privileged}}|{{range .HostConfig.Devices}}{{.PathOnHost}},{{end}}|{{.Path}} {{range .Args}}{{.}} {{end}}{{range .Config.Env}}{{.}} {{end}}" "$id" 2>/dev/null \
+        | tr '\n' ' ' | sed 's/ $//'; echo
+    done | awk -F'|' '$5=="true" || $6 ~ /\/dev\/dri/ {sub(/^\//,"",$2); a=$7; for (i=8;i<=NF;i++) a=a" "$i; print $1"|"$2"|"$3"|"substr($4,1,16)"|"a}'
   done
+}
+# Local container images: "repository:tag" per line
+local_images() {
+  if [ -n "${B70D_IMAGES+x}" ]; then cat "$B70D_IMAGES" 2>/dev/null; return; fi
+  local rt
+  for rt in docker podman; do
+    have "$rt" || continue
+    "$rt" image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null
+  done | sort -u
 }
 # Processes with a GPU render node open (own processes only without root): "pid ppid comm"
 dri_procs() {
@@ -478,8 +488,18 @@ if [ -e "$R/usr/share/vulkan/icd.d/intel_icd.x86_64.json" ] || [ -e "$R/usr/shar
     warn "Mesa $mver is older than 26: Vulkan LLM decode on Battlemage is much slower on Mesa 25.x"
     why "On a B70, Mesa 26.2.5 took llama.cpp Vulkan decode from 39 to 86 tok/s (Qwen3.6-35B-A3B) and 13.2 to 22.9 (Qwen3.8-27B),"
     why "close to SYCL. Only matters for Vulkan apps (llama.cpp Vulkan, Ollama, LM Studio)."
-    fix "update Mesa to 26.1.7+ (newer distro release or backports), or build Mesa into a local prefix and point only"
-    why "     LLM apps at it: VK_DRIVER_FILES=<prefix>/share/vulkan/icd.d/intel_icd.x86_64.json <app>   (or use llama.cpp SYCL)"
+    osver=$(. "$R/etc/os-release" 2>/dev/null; echo "${VERSION_ID:-}")
+    case "$OS_ID:$DISTRO" in
+      ubuntu:*) fix "sudo add-apt-repository ppa:kisak/kisak-mesa && sudo apt update && sudo apt upgrade   (Mesa 26.2.4 for 24.04 and 26.04)" ;;
+      fedora:*) if [ -n "$osver" ] && ver_lt "$osver" 44; then
+                  fix "Fedora 44 ships Mesa 26.2.4 (Fedora $osver updates have 25.x): sudo dnf system-upgrade download --releasever=44 && sudo dnf system-upgrade reboot"
+                else fix "sudo dnf upgrade --refresh mesa-vulkan-drivers"; fi ;;
+      arch:*|*:arch) fix "sudo pacman -Syu   (Arch has Mesa 26.2.x)" ;;
+      *) fix "update Mesa to 26.1.7+ (newer distro release or backports)" ;;
+    esac
+    why "     Without touching the system: the b70-llama image has both llama.cpp builds and its own Mesa 26.2.4:"
+    why "     docker run --rm -it --device /dev/dri -v ~/models:/models -p 8080:8080 ghcr.io/riceharvest/b70-llama vulkan -m /models/<model>.gguf"
+    why "     Or build Mesa into a local prefix: VK_DRIVER_FILES=<prefix>/share/vulkan/icd.d/intel_icd.x86_64.json <app>   (or use llama.cpp SYCL)"
   elif [ -n "$mver" ] && ver_lt "$mver" 26.1.7; then
     info "Mesa $mver: updating to 26.1.7 or newer doubled Vulkan decode on a B580 (llama.cpp discussion #27777)"
   fi
@@ -521,12 +541,50 @@ else
   ok "no swap"
 fi
 
+# --- image versions and serving flags ---------------------------------------------------
+# image_advice IMAGE: known newer releases of B70 images (as of 2026-10-15)
+image_advice() {
+  local img=$1 tag=${1##*:}
+  case "$img" in
+    ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1|ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.2)
+      info "$img is older than ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3"
+      why "b70.2: packed MTP verify '!!!!' fix; b70.3: Qwen3.6-35B-A3B MoE decode GEMV + fp8 linears (MTP4 175.9 -> 243.7 tok/s code)"
+      fix "docker pull ghcr.io/riceharvest/b70-vllm:latest   (then recreate the container)" ;;
+    intel/llm-scaler-vllm:*)
+      local v=${tag%%-*}
+      if printf '%s' "$v" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$' && ver_lt "$v" 0.26.0; then
+        warn "$img: prefix caching + MTP gives corrupted output on Qwen3.5/3.8 before 0.26.0-b2"
+        fix "docker pull intel/llm-scaler-vllm:0.26.0-b2   (or newer)"
+      fi ;;
+  esac
+}
+# container_advice NAME IMAGE ARGS: serving flags that matter on a B70
+container_advice() {
+  local name=$1 img=$2 args=" $3 "
+  case "$args$img" in *vllm*) ;; *) return 0 ;; esac
+  # Qwen3.5 / 3.6 / 3.8 / Qwen3-Next (GDN): the recurrent state is fp32 per the model config; at many concurrent
+  # requests it is a large share of the bytes read per step
+  if printf '%s' "$args$img" | grep -qiE 'qwen3[._-]?(5|6|8)|qwen3-?next|b70-vllm' && [ "${args#* --mamba-ssm-cache-dtype}" = "$args" ]; then
+    local seqs; seqs=$(printf '%s' "$args" | sed -nE 's/.* --max-num-seqs[ =]([0-9]+).*/\1/p')
+    if [ -z "$seqs" ] || [ "$seqs" -ge 16 ]; then
+      info "$name: GDN model served with the default fp32 recurrent state and up to ${seqs:-the default number of} concurrent requests"
+      why "Qwen3.5/3.6/3.8 store the linear-attention state in fp32 (60 MiB per request for Qwen3.6-35B-A3B). At 64 requests that is"
+      why "~1/3 of the bytes moved per decode step on a B70, and it limited one run to 61 concurrent requests. fp16 halves it."
+      why "The kernels support it; output quality vs fp32 is not measured yet, so compare outputs on your own prompts."
+      fix "add --mamba-ssm-cache-dtype float16 to the vllm serve arguments of $name"
+    fi
+  fi
+}
+
 # --- containers ----------------------------------------------------------------------
 if have docker; then
   section "Docker"
   rg=$(stat -c %g "$R/dev/dri/renderD128" 2>/dev/null)
   info "run GPU containers with: --device /dev/dri --group-add ${rg:-<render gid>}"
   why "vLLM XPU: also pass -e ZE_AFFINITY_MASK=0 (pick the card); on a B70 with vLLM UVA offload, leaving it out gave UR OUT_OF_DEVICE_MEMORY."
+fi
+if have docker || have podman; then
+  while IFS= read -r img; do [ -n "$img" ] && image_advice "$img"; done <<< "$(local_images)"
 fi
 
 # --- GPU users ---------------------------------------------------------------------------
@@ -535,9 +593,10 @@ DRIP=$(dri_procs)
 if [ -n "$CONTAINERS" ] || [ -n "$DRIP" ]; then
   section "GPU in use"
   if [ -n "$CONTAINERS" ]; then
-    while IFS='|' read -r crt cname cimg cstart; do
+    while IFS='|' read -r crt cname cimg cstart cargs; do
       [ -n "$cname" ] || continue
       info "$crt container $cname ($cimg) has the GPU, running since ${cstart/T/ }"
+      container_advice "$cname" "$cimg" "$cargs"
     done <<< "$CONTAINERS"
     why "A container left over from an earlier job keeps VRAM and can keep running kernels. On one B70, leftover vLLM"
     why "workers kept running and faulted the GPU during later jobs."
