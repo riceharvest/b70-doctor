@@ -267,7 +267,8 @@ docker|small|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3
 docker|fp16|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3.6-35B-A3B --mamba-ssm-cache-dtype float16
 docker|llama|ghcr.io/riceharvest/b70-llama:latest|2026-10-15T11:43|/usr/local/bin/b70-llama vulkan -m /models/x.gguf"
 writef "$F/images" "ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1
-ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3
+ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6
+ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7
 intel/llm-scaler-vllm:0.25.1-b3
 intel/llm-scaler-vllm:0.26.0-b2
 intel/llm-scaler-vllm:latest"
@@ -275,8 +276,9 @@ CONTAINERS="$F/containers" IMAGES="$F/images" run serve "$F" "$F/log" "$F/pkgs" 
 expect serve 'moe-bench: GDN model served with the default fp32 recurrent state and up to 64 concurrent requests'
 expect serve 'fix: add --mamba-ssm-cache-dtype float16 to the vllm serve arguments of moe-bench'
 reject serve 'small: GDN model'; reject serve 'fp16: GDN model'; reject serve 'llama: GDN model'
-expect serve 'ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1 is older than ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3'
-reject serve 'b70-vllm:v0.31.0-b70.3 is older'
+expect serve 'ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1 is older than ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7'
+expect serve 'ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6 is older than ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7'
+reject serve 'b70-vllm:v0.32.0-b70.7 is older'
 expect serve '\[WARN\] intel/llm-scaler-vllm:0.25.1-b3: prefix caching \+ MTP'
 reject serve 'llm-scaler-vllm:0.26.0-b2: prefix'; reject serve 'llm-scaler-vllm:latest: prefix'
 

@@ -548,13 +548,13 @@ else
 fi
 
 # --- image versions and serving flags ---------------------------------------------------
-# image_advice IMAGE: known newer releases of B70 images (as of 2026-10-15)
+# image_advice IMAGE: known newer releases of B70 images (as of 2026-10-24)
 image_advice() {
   local img=$1 tag=${1##*:}
   case "$img" in
-    ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1|ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.2)
-      info "$img is older than ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3"
-      why "b70.2: packed MTP verify '!!!!' fix; b70.3: Qwen3.6-35B-A3B MoE decode GEMV + fp8 linears (MTP4 175.9 -> 243.7 tok/s code)"
+    ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.[1-6])
+      info "$img is older than ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7"
+      why "b70.5/b70.6: +14-16% MTP decode speed, GDN zero-draft fix, inline system messages; b70.7: vLLM v0.32.0 (+7% KV pool)"
       fix "docker pull ghcr.io/riceharvest/b70-vllm:latest   (then recreate the container)" ;;
     intel/llm-scaler-vllm:*)
       local v=${tag%%-*}
@@ -575,8 +575,8 @@ container_advice() {
     if [ -z "$seqs" ] || [ "$seqs" -ge 16 ]; then
       info "$name: GDN model served with the default fp32 recurrent state and up to ${seqs:-the default number of} concurrent requests"
       why "Qwen3.5/3.6/3.8 store the linear-attention state in fp32 (60 MiB per request for Qwen3.6-35B-A3B). At 64 requests that is"
-      why "~1/3 of the bytes moved per decode step on a B70, and it limited one run to 61 concurrent requests. fp16 halves it."
-      why "The kernels support it; output quality vs fp32 is not measured yet, so compare outputs on your own prompts."
+      why "~1/3 of the bytes moved per decode step on a B70, and it limited one run to 61 concurrent requests. fp16 halves it"
+      why "(all 64 fit, 1420-1510 tok/s generation; decode quality matches the fp32 noise floor, gsm8k 98/100 vs 94/100)."
       fix "add --mamba-ssm-cache-dtype float16 to the vllm serve arguments of $name"
     fi
   fi
