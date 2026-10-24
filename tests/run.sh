@@ -260,11 +260,13 @@ expect glibc 'ghcr.io/riceharvest/b70-llama vulkan'
 B70D_GLIBC=2.42 run glibc2 "$F" "$F/log" "$F/pkgs" ""
 reject glibc2 'need glibc 2.39'
 
-# 8f. serving advice: GDN model on vLLM without --mamba-ssm-cache-dtype; old B70 images
+# 8f. serving advice: GDN model on vLLM without --mamba-ssm-cache-dtype; fp16 state at low seqs; fragmented buddyinfo; old B70 images
 F=$(case_dir serve); mkfix "$F"; writef "$F/log" "$GOODLOG"; : > "$F/prev.log"; writef "$F/pkgs" "$GOODPKGS"
+writef "$F/proc/buddyinfo" "Node 0, zone   Normal      2      1      1      2      0      1    493    148      9      1      0"
 writef "$F/containers" "docker|moe-bench|ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3|2026-10-15T11:43|bash -lc exec vllm serve /w/qwen36-a3b-gptq-palm --max-num-seqs 64 --kv-cache-dtype fp8 PATH=/usr/bin
 docker|small|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3.8-27B --max-num-seqs 4
-docker|fp16|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3.6-35B-A3B --mamba-ssm-cache-dtype float16
+docker|fp16|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve Qwen/Qwen3.6-35B-A3B --max-num-seqs 64 --mamba-ssm-cache-dtype float16
+docker|fp16-single|vllm/vllm-openai-xpu:v0.31.0|2026-10-15T11:43|vllm serve arcitech-psp/Holo4-27B-AutoRound-W4A16 --max-num-seqs 1 --mamba-ssm-cache-dtype float16
 docker|llama|ghcr.io/riceharvest/b70-llama:latest|2026-10-15T11:43|/usr/local/bin/b70-llama vulkan -m /models/x.gguf"
 writef "$F/images" "ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1
 ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6
@@ -273,8 +275,11 @@ intel/llm-scaler-vllm:0.25.1-b3
 intel/llm-scaler-vllm:0.26.0-b2
 intel/llm-scaler-vllm:latest"
 CONTAINERS="$F/containers" IMAGES="$F/images" run serve "$F" "$F/log" "$F/pkgs" "docker"
+expect serve 'host RAM is fragmented \(1 free 2-4 MiB blocks in /proc/buddyinfo Normal\)'
+expect serve 'compact_memory'
 expect serve 'moe-bench: GDN model served with the default fp32 recurrent state and up to 64 concurrent requests'
-expect serve 'fix: add --mamba-ssm-cache-dtype float16 to the vllm serve arguments of moe-bench'
+expect serve 'fix: for high-concurrency short/medium-context batching: add --mamba-ssm-cache-dtype float16 to moe-bench'
+expect serve '\[WARN\] fp16-single: GDN model with --mamba-ssm-cache-dtype float16 at --max-num-seqs 1: long prompts can overflow the fp16 state \(vllm#62781\)'
 reject serve 'small: GDN model'; reject serve 'fp16: GDN model'; reject serve 'llama: GDN model'
 expect serve 'ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1 is older than ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7'
 expect serve 'ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6 is older than ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7'

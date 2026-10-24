@@ -546,6 +546,15 @@ if [ -n "${sw// /}" ]; then
 else
   ok "no swap"
 fi
+if [ -r "$R/proc/buddyinfo" ]; then
+  hi_blocks=$(awk '$3=="zone" && $4=="Normal" && NF>=15 {s += $(NF-1) + $NF; n++} END {if (n>0) print s+0}' "$R/proc/buddyinfo" 2>/dev/null)
+  if [ -n "$hi_blocks" ] && [ "$hi_blocks" -lt 64 ] 2>/dev/null; then
+    info "host RAM is fragmented ($hi_blocks free 2-4 MiB blocks in /proc/buddyinfo Normal)"
+    why "Large pinned host buffers (Strata --stream-experts mirror, vLLM --cpu-offload-gb) then get scattered 4 KiB pages; on one B70"
+    why "that cut PCIe mirror bandwidth from 24 to 10-15 GB/s and decode from 42.7 to 26.9 tok/s on the same boot (Strata#3681)."
+    fix "before starting the engine: sync && echo 3 | sudo tee /proc/sys/vm/drop_caches && echo 1 | sudo tee /proc/sys/vm/compact_memory"
+  fi
+fi
 
 # --- image versions and serving flags ---------------------------------------------------
 # image_advice IMAGE: known newer releases of B70 images (as of 2026-10-24)
@@ -569,15 +578,23 @@ container_advice() {
   local name=$1 img=$2 args=" $3 "
   case "$args$img" in *vllm*) ;; *) return 0 ;; esac
   # Qwen3.5 / 3.6 / 3.8 / Qwen3-Next (GDN): the recurrent state is fp32 per the model config; at many concurrent
-  # requests it is a large share of the bytes read per step
-  if printf '%s' "$args$img" | grep -qiE 'qwen3[._-]?(5|6|8)|qwen3-?next|b70-vllm' && [ "${args#* --mamba-ssm-cache-dtype}" = "$args" ]; then
+  # requests it is a large share of the bytes read per step, whereas at 1-8 long-context requests fp16 state can overflow
+  if printf '%s' "$args$img" | grep -qiE 'qwen3[._-]?(5|6|8)|qwen3-?next|holo4|b70-vllm'; then
     local seqs; seqs=$(printf '%s' "$args" | sed -nE 's/.* --max-num-seqs[ =]([0-9]+).*/\1/p')
-    if [ -z "$seqs" ] || [ "$seqs" -ge 16 ]; then
-      info "$name: GDN model served with the default fp32 recurrent state and up to ${seqs:-the default number of} concurrent requests"
-      why "Qwen3.5/3.6/3.8 store the linear-attention state in fp32 (60 MiB per request for Qwen3.6-35B-A3B). At 64 requests that is"
-      why "~1/3 of the bytes moved per decode step on a B70, and it limited one run to 61 concurrent requests. fp16 halves it"
-      why "(all 64 fit, 1420-1510 tok/s generation; decode quality matches the fp32 noise floor, gsm8k 98/100 vs 94/100)."
-      fix "add --mamba-ssm-cache-dtype float16 to the vllm serve arguments of $name"
+    if [ "${args#* --mamba-ssm-cache-dtype}" = "$args" ]; then
+      if [ -z "$seqs" ] || [ "$seqs" -ge 16 ]; then
+        info "$name: GDN model served with the default fp32 recurrent state and up to ${seqs:-the default number of} concurrent requests"
+        why "Qwen3.5/3.6/3.8 store the linear-attention state in fp32 (60 MiB per request for Qwen3.6-35B-A3B). At 64 requests that is"
+        why "~1/3 of the bytes moved per decode step on a B70, and it limited one run to 61 concurrent requests. fp16 halves it"
+        why "(all 64 fit, 1420-1510 tok/s generation; decode quality matches the fp32 noise floor, gsm8k 98/100 vs 94/100)."
+        why "Keep fp32 for long-context (32K+) single-stream runs so the state cannot overflow fp16 (vllm#62781)."
+        fix "for high-concurrency short/medium-context batching: add --mamba-ssm-cache-dtype float16 to $name"
+      fi
+    elif printf '%s' "$args" | grep -qE ' --mamba-ssm-cache-dtype[ =](float16|half)\b' && [ -n "$seqs" ] && [ "$seqs" -le 8 ]; then
+      warn "$name: GDN model with --mamba-ssm-cache-dtype float16 at --max-num-seqs $seqs: long prompts can overflow the fp16 state (vllm#62781)"
+      why "The fp16 GDN state cache is for high-concurrency batching (e.g. 64 short/medium-context requests). At 1-8 sequences the fp32 state"
+      why "fits easily and avoids fp16 state saturation (65504) on 4K-262K prompts (0/9 needle recall in vllm#62781)."
+      fix "remove --mamba-ssm-cache-dtype float16 (or set B70_GDN_STATE=fp32) on $name"
     fi
   fi
 }
